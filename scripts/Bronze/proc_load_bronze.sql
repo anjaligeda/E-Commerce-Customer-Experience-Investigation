@@ -72,6 +72,7 @@ BEGIN
         FROM 'C:\Users\anjal\Dropbox\SQL Projects\OLIST_DATAPROJECT\olist_order_items_dataset.csv'
         WITH (
             FIRSTROW = 2,
+			FORMAT='CSV',
             FIELDQUOTE = '"',
             FIELDTERMINATOR = ',',
             ROWTERMINATOR = '0x0a',
