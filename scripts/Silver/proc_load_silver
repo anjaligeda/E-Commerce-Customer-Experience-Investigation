@@ -1,0 +1,347 @@
+/*
+===============================================================================
+Stored Procedure: Load Silver Layer (Bronze -> Silver)
+===============================================================================
+Script Purpose:
+    This stored procedure performs the ETL (Extract, Transform, Load) process to 
+    populate the 'Silver' schema tables from the 'Bronze' schema.
+	Actions Performed:
+		- Truncates Silver tables.
+		- Inserts transformed and cleansed data from Bronze into Silver tables.
+		
+Parameters:
+    None. 
+	  This stored procedure does not accept any parameters or return any values.
+
+Usage Example:
+    EXEC Silver.load_silver;
+===============================================================================
+*/
+EXEC silver.load_silver
+CREATE OR ALTER PROCEDURE Silver.load_silver AS
+BEGIN
+    DECLARE @start_time DATETIME,@end_time DATETIME,@batch_start_time DATETIME,@batch_end_time DATETIME;
+    BEGIN TRY
+        SET @batch_start_time=GETDATE();
+		PRINT'===================================='
+		PRINT 'Loading Silver layer'
+		PRINT'====================================' 
+
+		PRINT'------------------------------------'
+		PRINT'Loading Tables'
+		PRINT'------------------------------------'
+		
+		SET @start_time = GETDATE();
+        PRINT'>>Truncating Table:Silver.Orders'
+        TRUNCATE TABLE Bronze.Orders
+
+        PRINT'>>Inserting Data Into:Silver.Orders'
+INSERT INTO Silver.Orders(
+    order_id,
+    customer_id,
+    order_status,
+    order_purchase_timestamp,
+    order_approved_at,
+    order_delivered_carrier_date,
+    order_delivered_customer_date,
+    order_estimated_delivery_date)
+SELECT 
+    order_id,
+    customer_id,
+    order_status,
+    order_purchase_timestamp,
+    order_approved_at,
+    order_delivered_carrier_date,
+    order_delivered_customer_date,
+    CASE 
+        WHEN order_estimated_delivery_date < order_delivered_customer_date
+        THEN order_delivered_customer_date
+        ELSE order_estimated_delivery_date
+    END AS order_estimated_delivery_date FROM(
+SELECT 
+    order_id,
+    customer_id,
+    order_status,
+    order_purchase_timestamp,
+    order_approved_at,
+    order_delivered_carrier_date,
+    CASE 
+        WHEN order_delivered_customer_date < order_delivered_carrier_date 
+        THEN order_delivered_carrier_date
+        ELSE order_delivered_customer_date
+    END AS order_delivered_customer_date,
+    CASE 
+        WHEN order_estimated_delivery_date < order_delivered_customer_date
+        THEN order_delivered_customer_date
+        ELSE order_estimated_delivery_date
+    END AS order_estimated_delivery_date
+FROM (
+    SELECT
+        order_id,
+        customer_id,
+        CASE 
+            WHEN order_status = 'unavailable' AND 
+            (CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_purchase_timestamp, 105), 120) IS NOT NULL OR
+            CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_approved_at, 105), 120) IS NOT NULL) THEN 'approved'
+            ELSE order_status
+        END AS order_status,
+        CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_purchase_timestamp, 105), 120) AS order_purchase_timestamp,
+        CASE 
+            WHEN (order_status = 'canceled' OR order_status = 'created')
+                 AND CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_purchase_timestamp, 105), 120) IS NOT NULL 
+            THEN NULL
+            WHEN order_status = 'delivered'
+                 AND CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_purchase_timestamp, 105), 120) IS NOT NULL 
+            THEN CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_purchase_timestamp, 105), 120)
+            ELSE  CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_approved_at, 105), 120)
+        END AS order_approved_at,
+        CASE 
+            WHEN CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_approved_at, 105), 120) > CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_delivered_carrier_date, 105), 120)
+            THEN CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_approved_at, 105), 120)
+            ELSE CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_delivered_carrier_date, 105), 120)
+        END AS order_delivered_carrier_date,
+        CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_delivered_customer_date, 105), 120) AS order_delivered_customer_date,
+        CONVERT(VARCHAR, TRY_CONVERT(DATETIME, order_estimated_delivery_date, 105), 120) AS order_estimated_delivery_date
+    FROM Bronze.Orders
+) t )t ORDER BY order_id
+SET @end_time = GETDATE();
+        PRINT'-------------------------------------------------------------------------------------------'
+		PRINT'>> Load Duration: ' +CAST(DATEDIFF(second,@start_time,@end_time) AS NVARCHAR)+' seconds';
+		PRINT'-------------------------------------------------------------------------------------------'
+		
+		SET @start_time = GETDATE();
+        PRINT'>>Truncating Table:Silver.Order_Payments'
+        TRUNCATE TABLE Silver.Order_Payments
+
+        PRINT'>>Inserting Data Into:Silver.Order_Payments'
+
+INSERT INTO Silver.Order_Payments(
+    order_id,
+    payment_sequential,
+    payment_type,
+    payment_installments,
+    payment_value)
+SELECT 
+    order_id,
+    payment_sequential,
+    payment_type,
+    CASE WHEN payment_installments<1 THEN 1
+    ELSE payment_installments
+    END AS payment_installments,
+    payment_value
+    FROM(SELECT
+    order_id,
+    ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY payment_sequential) AS payment_sequential_clean,
+    payment_type,
+    payment_installments,
+    payment_value,
+    payment_sequential
+FROM Bronze.Order_Payments)t
+WHERE payment_sequential_clean=1
+ORDER BY order_id
+SET @end_time = GETDATE();
+        PRINT'-------------------------------------------------------------------------------------------'
+		PRINT'>> Load Duration: ' +CAST(DATEDIFF(second,@start_time,@end_time) AS NVARCHAR)+' seconds';
+		PRINT'-------------------------------------------------------------------------------------------'
+
+        SET @start_time = GETDATE();
+        PRINT'>>Truncating Table:Silver.Order_reviews'
+        TRUNCATE TABLE Silver.Order_reviews;
+
+        PRINT'>>Inserting Data Into:Silver.Order_reviews'
+
+INSERT INTO Silver.Order_reviews(
+        review_id,
+        order_id,
+        review_score)
+SELECT review_id,
+        order_id,
+        review_score FROM (SELECT
+        review_id,
+        order_id,
+        review_score,
+        ROW_NUMBER() OVER (
+            PARTITION BY order_id, review_score
+            ORDER BY review_id
+        ) AS rn
+    FROM Bronze.Order_Reviews)t 
+    WHERE rn=1
+    ORDER BY order_id
+SET @end_time = GETDATE();
+        PRINT'-------------------------------------------------------------------------------------------'
+		PRINT'>> Load Duration: ' +CAST(DATEDIFF(second,@start_time,@end_time) AS NVARCHAR)+' seconds';
+		PRINT'-------------------------------------------------------------------------------------------'
+
+        SET @start_time = GETDATE();
+        PRINT'>>Truncating Table:Silver.Customers'
+        TRUNCATE TABLE Silver.Customers;
+
+        PRINT'>>Inserting Data Into:Silver.Customers'
+
+INSERT INTO Silver.Customers(
+    customer_id,
+    customer_unique_id,
+    customer_zip_code_prefix,
+    customer_city,
+    customer_state)
+SELECT 
+    customer_id,
+    customer_unique_id,
+    customer_zip_code_prefix,
+    customer_city,
+    customer_state
+FROM Bronze.Customers
+SET @end_time = GETDATE();
+        PRINT'-------------------------------------------------------------------------------------------'
+		PRINT'>> Load Duration: ' +CAST(DATEDIFF(second,@start_time,@end_time) AS NVARCHAR)+' seconds';
+		PRINT'-------------------------------------------------------------------------------------------'
+		
+        SET @start_time = GETDATE();
+        PRINT'>>Truncating Table:Silver.Order_items'
+        TRUNCATE TABLE Silver.Order_items;
+
+        PRINT'>>Inserting Data Into:Silver.Order_items'
+
+INSERT INTO Silver.Order_items(
+    order_id,
+    product_id,
+    seller_id,
+    quantity,
+    unit_price,
+    total_item_revenue,
+    total_freight,
+    shipping_limit_date)
+    
+SELECT
+    order_id,
+    product_id,
+    seller_id,
+    COUNT(*) AS quantity,
+    MAX(TRY_CAST(price AS DECIMAL(10,2))) AS unit_price,
+    SUM(TRY_CAST(price AS DECIMAL(10,2))) AS total_item_revenue,
+    SUM(TRY_CAST(freight_value AS DECIMAL(10,2))) AS total_freight,
+    MAX(TRY_CONVERT(DATETIME, shipping_limit_date, 120)) AS shipping_limit_date
+FROM Bronze.Order_Items
+GROUP BY order_id, product_id, seller_id
+SET @end_time = GETDATE();
+        PRINT'-------------------------------------------------------------------------------------------'
+		PRINT'>> Load Duration: ' +CAST(DATEDIFF(second,@start_time,@end_time) AS NVARCHAR)+' seconds';
+		PRINT'-------------------------------------------------------------------------------------------'
+		
+        SET @start_time = GETDATE();
+        PRINT'>>Truncating Table:Silver.Sellers'
+        TRUNCATE TABLE Silver.Sellers;
+
+        PRINT'>>Inserting Data Into:Silver.Sellers'
+
+INSERT INTO Silver.Sellers(
+    seller_id,
+    seller_zip_code_prefix,
+    seller_city,
+    seller_state)
+    
+SELECT
+    seller_id,
+    TRY_CAST(seller_zip_code_prefix AS INT) AS seller_zip_code_prefix,
+    seller_city,
+    seller_state
+FROM Bronze.Sellers;
+SET @end_time = GETDATE();
+        PRINT'-------------------------------------------------------------------------------------------'
+		PRINT'>> Load Duration: ' +CAST(DATEDIFF(second,@start_time,@end_time) AS NVARCHAR)+' seconds';
+		PRINT'-------------------------------------------------------------------------------------------'
+		
+        SET @start_time = GETDATE();
+        PRINT'>>Truncating Table:Silver.Product_category_name'
+        TRUNCATE TABLE Silver.Product_category_name;
+
+        PRINT'>>Inserting Data Into:Silver.Product_category_name'
+
+INSERT INTO Silver.Product_category_name(
+    product_category_name,
+    product_category_name_english
+    )
+    
+SELECT
+    product_category_name,
+    product_category_name_english
+FROM Bronze.Product_category_name_translation;
+SET @end_time = GETDATE();
+        PRINT'-------------------------------------------------------------------------------------------'
+		PRINT'>> Load Duration: ' +CAST(DATEDIFF(second,@start_time,@end_time) AS NVARCHAR)+' seconds';
+		PRINT'-------------------------------------------------------------------------------------------'
+		
+        SET @start_time = GETDATE();
+        PRINT'>>Truncating Table:Silver.Geolocation'
+        TRUNCATE TABLE Silver.Geolocation;
+
+        PRINT'>>Inserting Data Into:Silver.Geolocation'
+
+INSERT INTO Silver.Geolocation(
+    geolocation_zip_code_prefix,
+    geolocation_lat,
+    geolocation_lng,
+    geolocation_city,
+    geolocation_state
+    )
+    
+SELECT
+    geolocation_zip_code_prefix,
+    geolocation_lat,
+    geolocation_lng,
+    geolocation_city,
+    geolocation_state
+FROM Bronze.Geolocation;
+SET @end_time = GETDATE();
+        PRINT'-------------------------------------------------------------------------------------------'
+		PRINT'>> Load Duration: ' +CAST(DATEDIFF(second,@start_time,@end_time) AS NVARCHAR)+' seconds';
+		PRINT'-------------------------------------------------------------------------------------------'
+		
+        SET @start_time = GETDATE();
+        PRINT'>>Truncating Table:Silver.Products'
+        TRUNCATE TABLE Silver.Products;
+
+        PRINT'>>Inserting Data Into:Silver.Products'
+INSERT INTO Silver.Products
+(
+    product_id,
+    product_category_name,
+    product_name_length,
+    product_description_length,
+    product_photos_qty,
+    product_weight_g,
+    product_length_cm,
+    product_height_cm,
+    product_width_cm
+    )
+    
+SELECT
+    product_id,
+    product_category_name,
+    product_name_length,
+    product_description_length,
+    product_photos_qty,
+    product_weight_g,
+    product_length_cm,
+    product_height_cm,
+    product_width_cm
+FROM Bronze.Products
+SET @end_time = GETDATE();
+        PRINT'-------------------------------------------------------------------------------------------'
+		PRINT'>> Load Duration: ' +CAST(DATEDIFF(second,@start_time,@end_time) AS NVARCHAR)+' seconds';
+		PRINT'-------------------------------------------------------------------------------------------'
+		SET @batch_end_time=GETDATE();
+		PRINT'-------------------------------------------------------------------------------------------'
+		PRINT'Loading Bronze Layer is Completed';
+		PRINT'Total Load Duration: ' +CAST(DATEDIFF(second,@batch_start_time,@batch_end_time) AS NVARCHAR)+' seconds';
+		PRINT'-------------------------------------------------------------------------------------------'
+		END TRY
+		BEGIN CATCH
+			PRINT'======================================================='
+			PRINT'ERROR OCCURED DURING LOADING BRONZE LAYER'
+			PRINT'Error Message' + ERROR_MESSAGE();
+			PRINT'Error Message' + CAST(ERROR_NUMBER() AS NVARCHAR);
+			PRINT'Error Message' + CAST(ERROR_STATE() AS NVARCHAR);
+			PRINT'======================================================='
+		END CATCH 
+END
