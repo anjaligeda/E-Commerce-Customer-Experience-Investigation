@@ -32,12 +32,13 @@ GO
 
 CREATE TABLE silver.Order_items (
     order_id             NVARCHAR(50),
-    order_item_id        INT,
     product_id           NVARCHAR(50),
     seller_id            NVARCHAR(50),
+    quantity              INT,
+    unit_price           DECIMAL(10,2),
+    total_item_revenue   DECIMAL(10,2),
+    total_freight        DECIMAL(10,2),
     shipping_limit_date  DATETIME,
-    price                DECIMAL(10,2),
-    freight_value        DECIMAL(10,2),
     dwh_create_date      DATETIME2 DEFAULT GETDATE()
 );
 GO
