@@ -183,6 +183,34 @@ SELECT seller_zip_code_prefix, LEN(seller_zip_code_prefix) AS zip_length
 FROM Bronze.Sellers
 WHERE LEN(seller_zip_code_prefix) < 5;
 
+-- ====================================================================
+-- Checking 'Silver.product_category_name'
+-- ====================================================================  
+--check if there is any product_category_name which is not present in Silver.Products but in Silver.product_category_name
+SELECT product_category_name
+FROM Silver.Product_category_name
+GROUP BY product_category_name
+HAVING product_category_name not in (SELECT product_category_name FROM Silver.Products)
+
+--check for trailing spaces
+SELECT product_category_name
+FROM Bronze.Product_category_name
+WHERE product_category_name != TRIM(product_category_name)
+
+--Check Distinct product name
+SELECT DISTINCT product_category_name FROM Silver.Product_category_name ORDER BY product_category_name;
+
+-- ====================================================================
+-- Checking 'Silver.Geolocation'
+-- ====================================================================  
+--check if there is any duplicates
+SELECT geolocation_zip_code_prefix, COUNT(*)
+FROM Bronze.Geolocation
+GROUP BY geolocation_zip_code_prefix
+HAVING COUNT(*) > 1;
+
+
+
 
 
 
